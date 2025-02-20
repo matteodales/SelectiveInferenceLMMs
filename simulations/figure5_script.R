@@ -70,6 +70,7 @@ n = 200
 nrsubj = 40
 nrobs = 5
 p = 20 # number of fixed effects, other than the intercept
+q = 0
 p_rel = 5 # number of non-zero coefficients, other than the intercept
 
 SNR = 1 #signal-to-noise ratio
