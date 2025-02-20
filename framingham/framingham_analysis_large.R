@@ -31,6 +31,11 @@ selection_frac <- 0.5 # fraction of observations to use for selecting the variab
 
 
 
+
+
+
+
+
 #####################################################
 ########### preparing the framingham data ###########
 #####################################################
@@ -46,9 +51,10 @@ data$X <- NULL
 data$age <- scale(data$age)
 data$year <- (data$year-5)/10
 
-
-pnoise = 5 # number of fixed effects, other than the intercept
+pnoise = 200
 p <- 3 + pnoise
+
+real_beta <- c(rep(1,3),rep(0,pnoise))
 
 var_names <- c('sex','age','year', paste("X", 1:pnoise, sep=""))
 y <- scale(data$cholst, scale=FALSE)/100
@@ -85,54 +91,6 @@ for(j in 1:sim_num){
 
 
 
-
-
-
-
-
-#####################################################
-########### computing modelsets postcAIC  ###########
-#####################################################
-
-
-cAIC_model_sets <- list()
-
-print('postcAIC')
-
-for(jj in 1:sim_num){
-  
-  print(jj)
-  
-  X <- Xs[[jj]]
-  
-  timeout <<- 0
-  
-  tryCatch({
-    cAIC_model_set <- withTimeout({
-      compute_cAIC_for_model_set(
-        X,
-        y,
-        subjind,
-        model = "NERM",
-        covariate_selection_matrix = NULL,
-        modelset  = "all_subsets",
-        common = NULL,
-        intercept = TRUE
-      )
-      
-    }, timeout = 600)
-  }, TimeoutException = function(ex) {
-    message("Timeout on modelset. Skipping.")
-    timeout<<-1
-  })
-  
-  if(timeout==1){
-    cAIC_model_sets[[jj]] <- NA
-    next}
-  
-  cAIC_model_sets[[jj]] <- cAIC_model_set
-  
-}
 
 
 
@@ -213,6 +171,7 @@ for(jj in 1:sim_num){
   
   opt3 <- which.min(BIC_vec)
   selected <- sel_vec[,opt3]
+  
   
   
   selected_tot_names <- var_names[selected==1]
@@ -446,137 +405,6 @@ saveRDS(datasplitting_results_df, file = paste0('framingham_datasplitting_result
 
 
 
-print('postcAIC')
-
-output <- foreach(j=1:sim_num, .packages = c("glmnet","lme4",'lmerTest','nlme','R.utils','postcAIC','ks','tmg','mgcv')) %dopar% {
-  
-  results_df <- data.frame(matrix(nrow = 0, ncol = 9))
-  colnames(results_df) <- c('method', 'fwer', 'avg_ci', 'sel_sex', 'coef_sex', 'sel_age', 'coef_age', 'sel_year', 'coef_year')
-  
-  pvals_df <- data.frame(matrix(nrow = 0, ncol = 7))
-  colnames(pvals_df) <- c('method', 'variable', 'signal', 'estimate', 'pval', 'cil', 'ciu')
-  
-  
-  print(j)
-  
-  X <- Xs[[j]]
-  
-  
-  timeout <<- 0
-  
-  
-  if(any(is.na(cAIC_model_setss[[j]]))) next
-  
-  cAIC_model_set <- cAIC_model_setss[[j]]
-  
-  cAIC_min = cAIC_model_set$cAIC_min
-  degcAIC_models = cAIC_model_set$degcAIC_models
-  X_full = cAIC_model_set$X_full
-  X_cluster_full = cAIC_model_set$X_cluster_full
-  
-  sig_u_full = cAIC_model_set$sig_u_full
-  sig_e_full = cAIC_model_set$sig_e_full
-  
-  beta_sel = cAIC_model_set$beta_sel
-  mu_sel = cAIC_model_set$mu_sel
-  
-  modelset_matrix = cAIC_model_set$modelset_matrix
-  x_beta_lin_com = cAIC_model_set$X_cluster_full
-  
-  # Post-cAIC CI for mixed and fixed parameters -------------------------------------
-  
-  t1 <- Sys.time()
-  
-  tryCatch({
-    postcAIC_CI_results <- withTimeout({
-      postcAIC_CI(
-        cAIC_min,
-        degcAIC_models,
-        
-        X_full,
-        X_cluster_full,
-        sig_u_full,
-        sig_e_full,
-        model = "NERM",
-        subjind,
-        
-        beta_sel,
-        mu_sel,
-        
-        n_samples = 1000,
-        
-        modelset_matrix,
-        scale_mvrnorm = 10,
-        n_starting_points = 5,
-        x_beta_lin_com = NULL
-      )
-      
-    }, timeout = 6000)
-  }, TimeoutException = function(ex) {
-    message("Timeout. Skipping.")
-    results_df[nrow(results_df) + 1,] <<- c('postcAIC', NA, NA, NA, NA, NA)
-    timeout<<-1
-  })
-  
-  
-  if(timeout==1) next
-  
-  beta_postcAIC_CI_up <- postcAIC_CI_results$beta_postcAIC_CI_up
-  beta_postcAIC_CI_do <- postcAIC_CI_results$beta_postcAIC_CI_do
-  beta_postcAIC_pval <- postcAIC_CI_results$beta_postcAIC_pval
-  
-  selected <- modelset_matrix[cAIC_min,]
-  
-  k <- 1
-  for(i in seq_len(p)){
-    
-    if(selected[i]!=0){
-      
-      pvals_df[nrow(pvals_df)+1,] <- c('postcAIC', var_names[i], as.numeric(real_beta[i]!=0), beta_sel[k],
-                                       beta_postcAIC_pval[k], beta_postcAIC_CI_do[i], beta_postcAIC_CI_up[i])
-      
-      k <- k + 1
-      
-    }
-  }
-  
-  pvals_df[,3:7] <- lapply(pvals_df[,3:7],as.numeric)
-  
-  avg_CI <- mean(pvals_df[(nrow(pvals_df)-sum(selected)):nrow(pvals_df), 7] - pvals_df[(nrow(pvals_df)-sum(selected)):nrow(pvals_df), 6])
-  
-  pvals <- p.adjust(beta_postcAIC_pval, method = 'holm')
-  
-  selected[selected==1] <- pvals<=fdr_level
-  postcAIC_metrics <- metrics(selected, real_beta!=0)
-  
-  sel_sex = selected[1]
-  if (sel_sex==1) coef_sex = pvals_df[pvals_df$variable=='sex','estimate'] else coef_sex = 0
-  sel_age = selected[2]
-  if (sel_age==1) coef_age = pvals_df[pvals_df$variable=='age','estimate'] else coef_age = 0
-  sel_year = selected[3]
-  if (sel_year==1) coef_year = pvals_df[pvals_df$variable=='year','estimate'] else coef_year = 0
-  
-  results_df[nrow(results_df) + 1,] <- c('postcAIC', postcAIC_metrics$fwer, avg_CI, sel_sex, coef_sex, sel_age, coef_age, sel_year, coef_year)
-  
-  return(list(results = results_df, pvals = pvals_df))
-  
-}
-
-results_df <- do.call('rbind', lapply(output,function(x){x[[1]]}))
-pvals_df <- do.call('rbind', lapply(output,function(x){x[[2]]}))
-
-
-results_df[,2:9] <- lapply(results_df[,2:9],as.numeric)
-
-saveRDS(pvals_df, file = paste0('framingham_postcAIC_pvals_pnoise',pnoise,'_SNR',SNR,'.RDS'))
-saveRDS(results_df, file = paste0('framingham_postcAIC_results_pnoise',pnoise,'_SNR',SNR,'.RDS'))
-
-stopCluster(myCluster)
-
-
-
-
-#dataframes to #save results
 
 print('selfmade-lasso')
 
@@ -758,224 +586,3 @@ selfmadelasso_results_df[,2:9] <- lapply(selfmadelasso_results_df[,2:9],as.numer
 
 saveRDS(selfmadelasso_pvals_df, file = paste0('framingham_selfmadelasso_pvals_framingham_pnoise',pnoise,'_SNR',SNR,'.RDS'))
 saveRDS(selfmadelasso_results_df, file = paste0('framingham_selfmadelasso_results_framingham_pnoise',pnoise,'_SNR',SNR,'.RDS'))
-
-
-
-
-
-
-
-print('selfmade-step')
-
-output <- foreach(j=1:sim_num, .packages = c("glmnet","lme4",'lmerTest')) %dopar% {
-  
-  modFun <- function(yy, dat = dat)
-  {
-    dat$y <- as.numeric(yy)
-    suppressWarnings(suppressMessages(lmer(y ~ -1 + sex + age + year + X1 + X2 + X3 + X4 + X5 + (1|subjind), REML = FALSE, data = dat)))
-  }
-  
-  selFun <- function(mod)
-  {
-    
-    suppressWarnings(suppressMessages(attr(lmerTest:::step.lmerModLmerTest(mod, reduce.random = FALSE), "model")))
-    
-  }
-  
-  extractSelFun <- function(this_mod){
-    
-    if(class(this_mod)=="lm")
-      return(attr(this_mod$coefficients, "names")) else
-        return(c(names(fixef(this_mod))))
-    
-  }
-  
-
-  
-  results_df <- data.frame(matrix(nrow = 0, ncol = 9))
-  colnames(results_df) <- c('method', 'fwer', 'avg_ci', 'sel_sex', 'coef_sex', 'sel_age', 'coef_age', 'sel_year', 'coef_year')
-  
-  pvals_df <- data.frame(matrix(nrow = 0, ncol = 7))
-  colnames(pvals_df) <- c('method', 'variable', 'signal', 'estimate', 'pval', 'cil', 'ciu')
-  
-  print(j)
-  
-  X <- Xs[[j]]
-  
-  
-  dat <<- data.frame(X, y, subjind)
-  
-  mod <- modFun(yy=y, dat=dat)
-  
-  final_model <- selFun(mod)
-  beta <- fixef(final_model)
-  
-  
-  selection = extractSelFun(selFun(mod))
-  
-  checkFun <- function(yb){
-    
-    setequal( extractSelFun(selFun(modFun(yy = yb, dat=dat))),
-              selection )
-    
-  }
-  
-  
-  
-  r <- suppressWarnings(mocasin(mod = final_model,
-                                this_y = y,
-                                checkFun = checkFun,
-                                nrSamples = 100,
-                                which = 1:length(selection),
-                                bayesian = FALSE,
-                                conditional = FALSE,
-                                efficient = TRUE,
-                                varForSampling = 'est',
-                                VCOV_sampling = NULL,
-                                VCOV_vT = NULL,
-                                trace=FALSE))
-  
-  
-  r <- do.call("rbind", r$selinf)
-  r$variable <- selection
-  
-  selected <- rep(0,p)
-  
-  k <- 1
-  for(i in seq_len(p)){
-    
-    if(var_names[i] %in% selection){
-      
-      pvals_df[nrow(pvals_df)+1,] <- c('selfmade-step', var_names[i], as.numeric(real_beta[i]!=0), beta[k],
-                                       r$pval[k], r$cil[k], r$ciu[k])
-      
-      selected[i] <- 1
-      k <- k +1
-      
-    }
-  }
-  
-  pvals_df[,3:7] <- lapply(pvals_df[,3:7],as.numeric)
-  pvals_df[is.infinite(pvals_df[,6]),6] <- NA
-  pvals_df[is.infinite(pvals_df[,7]),7] <- NA
-  
-  avg_CI <- mean(pvals_df[(nrow(pvals_df)-sum(selected)):nrow(pvals_df), 7] - pvals_df[(nrow(pvals_df)-sum(selected)):nrow(pvals_df), 6], na.rm=TRUE)
-  
-  pvals <- p.adjust(r$pval, method = 'holm')
-  
-  selected[selected==1] <- pvals<=fdr_level
-  selected[is.na(selected)] <- rep(0,sum(is.na(selected)))
-  rugamer_metrics <- metrics(selected, real_beta!=0)
-  
-  sel_sex = selected[1]
-  if (sel_sex==1) coef_sex = r[r$variable=='sex','tstat'] else coef_sex = 0
-  sel_age = selected[2]
-  if (sel_age==1) coef_age = r[r$variable=='age','tstat'] else coef_age = 0
-  sel_year = selected[3]
-  if (sel_year==1) coef_year = r[r$variable=='year','tstat'] else coef_year = 0
-  
-  results_df[nrow(results_df) + 1,] <- c('selfmade-step', rugamer_metrics$fwer, avg_CI, sel_sex, coef_sex, sel_age, coef_age, sel_year, coef_year)
-  
-  return(list(pvals_df, results_df))
-}
-
-results_df <- do.call('rbind', lapply(output,function(x){x[[2]]}))
-pvals_df <- do.call('rbind', lapply(output,function(x){x[[1]]}))
-
-results_df[,2:9] <- lapply(results_df[,2:9],as.numeric)
-
-saveRDS(pvals_df, file = paste0('framingham_selfmadestep_pvals_pnoise',pnoise,'_SNR',SNR,'.RDS'))
-saveRDS(results_df, file = paste0('framingham_selfmadestep_results_pnoise',pnoise,'_SNR',SNR,'.RDS'))
-
-
-
-
-
-
-
-
-
-print('UVILassoLMM')
-
-UVILassoLMM_results_df <- data.frame(matrix(nrow = 0, ncol = 9))
-colnames(UVILassoLMM_results_df) <- c('method', 'fwer', 'avg_ci', 'sel_sex', 'coef_sex', 'sel_age', 'coef_age', 'sel_year', 'coef_year')
-
-UVILassoLMM_pvals_df <- data.frame(matrix(nrow = 0, ncol = 7))
-colnames(UVILassoLMM_pvals_df) <- c('method', 'variable', 'signal', 'estimate', 'pval', 'cil', 'ciu')
-
-
-for(jj in 1:sim_num){
-  
-  print(jj)
-  X <- Xs[[jj]]
-  
-  
-  dat <- data.frame(X, y, subjind)
-  
-  suppressWarnings(suppressMessages(mod <- lmer(formula = yform, data = dat)))
-  V <- getME(mod,'Z')%*%(sigma(mod)^2*getME(mod,'Lambda')%*%getME(mod,'Lambdat'))%*%t(getME(mod,'Z'))+ diag(sigma(mod)^2,n)
-  V_inv <- solve(V)
-  
-  V_menunmezz <- matrixsqrtinv(V)
-  cv_mod <- cv.glmnet(x = V_menunmezz%*%X, y = V_menunmezz%*%y, intercept=FALSE, standardize=FALSE)
-  beta <- coef(cv_mod, s = cv_mod$lambda.min)[-1]
-  
-  selected <- as.numeric(beta!=0)
-  C = as.matrix(t(X)%*%V_inv%*%X)/n
-  Cinv <- solve(C)
-  
-  kram_lambda <- cv_mod$lambda.min*n
-  
-  lambdas <- c(rep(kram_lambda/sqrt(n),p))
-  
-  
-  
-  dmat <- expand.grid(rep(list(c(-1,1)),p))[1:2**(p-1),]
-  ncp = lambdas[1]**2 * max(apply(dmat, 1, FUN = function(a){t(a) %*% Cinv %*% a}))
-  
-  pvals <- rep(0,p)
-  k <- 1
-  
-  for(i in seq_len(p)){
-    
-    
-    test_stat <- beta[i]**2 / Cinv[i,i] * n
-    pvals[k] <- pchisq(test_stat, 1, ncp=ncp, lower.tail = FALSE)
-    
-    
-    cil <- beta[i] - sqrt(qchisq(1 - fdr_level, 1,  ncp=ncp)*Cinv[i,i]/n)
-    ciu <- beta[i] + sqrt(qchisq(1 - fdr_level, 1, ncp=ncp)*Cinv[i,i]/n)
-    
-    UVILassoLMM_pvals_df[nrow(UVILassoLMM_pvals_df)+1,] <- c('UVILassoLMM', var_names[i], as.numeric(real_beta[i]!=0),
-                                                           beta[i], pvals[k], cil, ciu)
-    
-    k <- k +1
-    
-  }
-  
-  UVILassoLMM_pvals_df[,3:7] <- lapply(UVILassoLMM_pvals_df[,3:7],as.numeric)
-  
-  avg_CI <- mean(UVILassoLMM_pvals_df[(nrow(UVILassoLMM_pvals_df)-sum(selected)):nrow(UVILassoLMM_pvals_df), 7] - UVILassoLMM_pvals_df[(nrow(UVILassoLMM_pvals_df)-sum(selected)):nrow(UVILassoLMM_pvals_df), 6])
-  
-  pvals <- p.adjust(pvals, method = 'holm')
-  
-  selected <- as.numeric(pvals<=fdr_level)
-  UVILassoLMM_metrics <- metrics(selected, real_beta!=0)
-  
-  sel_sex = selected[1]
-  if (sel_sex==1) coef_sex = beta[1] else coef_sex = 0
-  sel_age = selected[2]
-  if (sel_age==1) coef_age = beta[2] else coef_age = 0
-  sel_year = selected[3]
-  if (sel_year==1) coef_year = beta[3] else coef_year = 0
-  
-  UVILassoLMM_results_df[nrow(UVILassoLMM_results_df) + 1,] <- c('UVILassoLMM', UVILassoLMM_metrics$fwer, avg_CI, sel_sex, coef_sex, sel_age, coef_age, sel_year, coef_year)
-  
-}
-
-
-UVILassoLMM_results_df[,2:9] <- lapply(UVILassoLMM_results_df[,2:9],as.numeric)
-
-saveRDS(UVILassoLMM_pvals_df, file = paste0('framingham_UVILassoLMM_pvals_framingham_pnoise',pnoise,'_SNR',SNR,'.RDS'))
-saveRDS(UVILassoLMM_results_df, file = paste0('framingham_UVILassoLMM_results_framingham_pnoise',pnoise,'_SNR',SNR,'.RDS'))
-
