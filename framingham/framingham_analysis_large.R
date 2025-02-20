@@ -14,7 +14,7 @@ library(postcAIC)
 library(ks)
 library(tmg)
 
-# simulation settings 
+
 
 seed = 0
 
